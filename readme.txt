@@ -1,5 +1,6 @@
 provider "azurerm" {
   features {}
+  subscription_id = var.subscription_id
 }
 
 resource "azurerm_resource_group" "rg" {
@@ -61,6 +62,18 @@ resource "azurerm_lb_rule" "lb_rule" {
   probe_id                      = azurerm_lb_probe.health_probe.id
 }
 
+resource "azurerm_network_interface_backend_address_pool_association" "vm_nic_association" {
+  count                   = length(var.vm_nic_ids)
+  network_interface_id    = var.vm_nic_ids[count.index]
+  ip_configuration_name   = "ipconfig1"
+  backend_address_pool_id = azurerm_lb_backend_address_pool.bpepool.id
+}
+
+variable "subscription_id" {
+  description = "Azure Subscription ID"
+  type        = string
+}
+
 variable "resource_group_name" {}
 variable "location" {}
 variable "vnet_name" {}
@@ -68,6 +81,11 @@ variable "vnet_address_space" {}
 variable "subnet_name" {}
 variable "subnet_address_prefix" {}
 variable "lb_name" {}
+
+variable "vm_nic_ids" {
+  description = "List of VM NIC IDs to associate with the backend pool"
+  type        = list(string)
+}
 
 output "load_balancer_private_ip" {
   value = azurerm_lb.ilb.frontend_ip_configuration[0].private_ip_address
