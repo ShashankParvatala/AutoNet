@@ -20,18 +20,15 @@ resource "azurerm_resource_group" "rg" {
   location = var.location
 }
 
-resource "azurerm_virtual_network" "vnet" {
+data "azurerm_virtual_network" "vnet" {
   name                = var.vnet_name
-  address_space       = [var.vnet_address_space]
-  location            = azurerm_resource_group.rg.location
-  resource_group_name = azurerm_resource_group.rg.name
+  resource_group_name = var.resource_group_name
 }
 
-resource "azurerm_subnet" "subnet" {
+data "azurerm_subnet" "subnet" {
   name                 = var.subnet_name
-  resource_group_name  = azurerm_resource_group.rg.name
-  virtual_network_name = azurerm_virtual_network.vnet.name
-  address_prefixes     = [var.subnet_address_prefix]
+  resource_group_name  = var.resource_group_name
+  virtual_network_name = data.azurerm_virtual_network.vnet.name
 }
 
 resource "azurerm_lb" "ilb" {
@@ -41,7 +38,7 @@ resource "azurerm_lb" "ilb" {
   sku                 = "Standard"
   frontend_ip_configuration {
     name                          = "LoadBalancerFrontEnd"
-    subnet_id                     = azurerm_subnet.subnet.id
+    subnet_id = data.azurerm_subnet.subnet.id
     private_ip_address_allocation = "Dynamic"
   }
 }
@@ -113,7 +110,7 @@ variable "vnet_name" {
 }
 
 variable "vnet_address_space" {
-  description = "Address space for the VNet"
+  description = "(Deprecated) Address space for the VNet - not used when referencing an existing VNet"
   type        = string
   default     = "10.0.0.0/16"
 }
@@ -125,7 +122,7 @@ variable "subnet_name" {
 }
 
 variable "subnet_address_prefix" {
-  description = "Subnet address prefix"
+  description = "(Deprecated) Subnet address prefix - not used when referencing an existing Subnet"
   type        = string
   default     = "10.0.1.0/24"
 }
