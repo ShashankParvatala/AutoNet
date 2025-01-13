@@ -3,6 +3,18 @@ provider "azurerm" {
   subscription_id = var.subscription_id
 }
 
+provider "azurerm" {
+  alias           = "sub1"
+  subscription_id = "11111111-1111-1111-1111-111111111111"
+  features        {}
+}
+
+provider "azurerm" {
+  alias           = "sub2"
+  subscription_id = "22222222-2222-2222-2222-222222222222"
+  features        {}
+}
+
 resource "azurerm_resource_group" "rg" {
   name     = var.resource_group_name
   location = var.location
@@ -62,18 +74,18 @@ resource "azurerm_lb_rule" "lb_rule" {
   probe_id                      = azurerm_lb_probe.health_probe.id
 }
 
-resource "azurerm_network_interface_backend_address_pool_association" "vm_nic_association" {
-  for_each                = var.vm_nics
-  network_interface_id    = each.value.nic_id
-  ip_configuration_name   = each.value.ip_configuration_name
+resource "azurerm_network_interface_backend_address_pool_association" "vm1_nic_association" {
+  network_interface_id    = var.vm_nics["vm1"].nic_id
+  ip_configuration_name   = var.vm_nics["vm1"].ip_configuration_name
   backend_address_pool_id = azurerm_lb_backend_address_pool.bpepool.id
-  provider                = azurerm.alias[each.value.subscription_id]
+  provider                = azurerm.sub1
 }
 
-provider "azurerm" {
-  alias           = each.value.subscription_id
-  subscription_id = each.value.subscription_id
-  features        {}
+resource "azurerm_network_interface_backend_address_pool_association" "vm2_nic_association" {
+  network_interface_id    = var.vm_nics["vm2"].nic_id
+  ip_configuration_name   = var.vm_nics["vm2"].ip_configuration_name
+  backend_address_pool_id = azurerm_lb_backend_address_pool.bpepool.id
+  provider                = azurerm.sub2
 }
 
 variable "subscription_id" {
@@ -87,31 +99,37 @@ variable "resource_group_name" {
   type        = string
   default     = "rg-ilb"
 }
+
 variable "location" {
   description = "Azure region for resources"
   type        = string
   default     = "East US"
 }
+
 variable "vnet_name" {
   description = "Virtual Network name"
   type        = string
   default     = "vnet-ilb"
 }
+
 variable "vnet_address_space" {
   description = "Address space for the VNet"
   type        = string
   default     = "10.0.0.0/16"
 }
+
 variable "subnet_name" {
   description = "Subnet name"
   type        = string
   default     = "subnet-ilb"
 }
+
 variable "subnet_address_prefix" {
   description = "Subnet address prefix"
   type        = string
   default     = "10.0.1.0/24"
 }
+
 variable "lb_name" {
   description = "Internal Load Balancer name"
   type        = string
@@ -140,7 +158,6 @@ variable "vm_nics" {
       ip_configuration_name = "ipconfig1"
     }
   }
-}))
 }
 
 output "load_balancer_private_ip" {
