@@ -63,28 +63,84 @@ resource "azurerm_lb_rule" "lb_rule" {
 }
 
 resource "azurerm_network_interface_backend_address_pool_association" "vm_nic_association" {
-  count                   = length(var.vm_nic_ids)
-  network_interface_id    = var.vm_nic_ids[count.index]
-  ip_configuration_name   = "ipconfig1"
+  for_each                = var.vm_nics
+  network_interface_id    = each.value.nic_id
+  ip_configuration_name   = each.value.ip_configuration_name
   backend_address_pool_id = azurerm_lb_backend_address_pool.bpepool.id
+  provider                = azurerm.alias[each.value.subscription_id]
+}
+
+provider "azurerm" {
+  alias           = each.value.subscription_id
+  subscription_id = each.value.subscription_id
+  features        {}
 }
 
 variable "subscription_id" {
   description = "Azure Subscription ID"
   type        = string
+  default     = "33333333-3333-3333-3333-333333333333"
 }
 
-variable "resource_group_name" {}
-variable "location" {}
-variable "vnet_name" {}
-variable "vnet_address_space" {}
-variable "subnet_name" {}
-variable "subnet_address_prefix" {}
-variable "lb_name" {}
+variable "resource_group_name" {
+  description = "Name of the Resource Group"
+  type        = string
+  default     = "rg-ilb"
+}
+variable "location" {
+  description = "Azure region for resources"
+  type        = string
+  default     = "East US"
+}
+variable "vnet_name" {
+  description = "Virtual Network name"
+  type        = string
+  default     = "vnet-ilb"
+}
+variable "vnet_address_space" {
+  description = "Address space for the VNet"
+  type        = string
+  default     = "10.0.0.0/16"
+}
+variable "subnet_name" {
+  description = "Subnet name"
+  type        = string
+  default     = "subnet-ilb"
+}
+variable "subnet_address_prefix" {
+  description = "Subnet address prefix"
+  type        = string
+  default     = "10.0.1.0/24"
+}
+variable "lb_name" {
+  description = "Internal Load Balancer name"
+  type        = string
+  default     = "ilb-test"
+}
 
-variable "vm_nic_ids" {
-  description = "List of VM NIC IDs to associate with the backend pool"
-  type        = list(string)
+variable "vm_nics" {
+  description = "Map of NICs with subscription, resource group, NIC ID, and IP configuration name"
+  type = map(object({
+    subscription_id        = string
+    resource_group_name    = string
+    nic_id                 = string
+    ip_configuration_name  = string
+  }))
+  default = {
+    "vm1" = {
+      subscription_id       = "11111111-1111-1111-1111-111111111111"
+      resource_group_name   = "rg-vm1"
+      nic_id                = "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/rg-vm1/providers/Microsoft.Network/networkInterfaces/vm1-nic"
+      ip_configuration_name = "ipconfig1"
+    }
+    "vm2" = {
+      subscription_id       = "22222222-2222-2222-2222-222222222222"
+      resource_group_name   = "rg-vm2"
+      nic_id                = "/subscriptions/22222222-2222-2222-2222-222222222222/resourceGroups/rg-vm2/providers/Microsoft.Network/networkInterfaces/vm2-nic"
+      ip_configuration_name = "ipconfig1"
+    }
+  }
+}))
 }
 
 output "load_balancer_private_ip" {
