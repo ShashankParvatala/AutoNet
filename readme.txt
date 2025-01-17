@@ -1,162 +1,251 @@
-provider "azurerm" {
-  features {}
-  subscription_id = var.subscription_id
-}
-
-provider "azurerm" {
-  alias           = "sub1"
-  subscription_id = "11111111-1111-1111-1111-111111111111"
-  features        {}
-}
-
-provider "azurerm" {
-  alias           = "sub2"
-  subscription_id = "22222222-2222-2222-2222-222222222222"
-  features        {}
-}
-
-resource "azurerm_resource_group" "rg" {
-  name     = var.resource_group_name
-  location = var.location
-}
-
-data "azurerm_virtual_network" "vnet" {
+// Data source to retrieve an existing Virtual Network
+data "azurerm_virtual_network" "existing_vnet" {
   name                = var.vnet_name
-  resource_group_name = var.resource_group_name
+  resource_group_name = var.vnet_resource_group
 }
 
-data "azurerm_subnet" "subnet" {
+// Data source to retrieve an existing Subnet within the Virtual Network
+data "azurerm_subnet" "existing_subnet" {
   name                 = var.subnet_name
-  resource_group_name  = var.resource_group_name
-  virtual_network_name = data.azurerm_virtual_network.vnet.name
+  virtual_network_name = data.azurerm_virtual_network.existing_vnet.name
+  resource_group_name  = data.azurerm_virtual_network.existing_vnet.resource_group_name
 }
 
-resource "azurerm_lb" "ilb" {
+// Data source to retrieve existing Network Interfaces
+data "azurerm_network_interface" "nic" {
+  for_each            = toset(var.nic_names)
+  name                = each.key
+  resource_group_name = var.nic_resource_group
+}
+
+// Resource to create an Internal Load Balancer
+resource "azurerm_lb" "internal_lb" {
   name                = var.lb_name
-  location            = azurerm_resource_group.rg.location
-  resource_group_name = azurerm_resource_group.rg.name
+  location            = var.location
+  resource_group_name = var.resource_group_name_tmp
   sku                 = "Standard"
+
   frontend_ip_configuration {
-    name                          = "LoadBalancerFrontEnd"
-    subnet_id = data.azurerm_subnet.subnet.id
+    name                          = "frontend-ip-config"
+    subnet_id                     = data.azurerm_subnet.existing_subnet.id
     private_ip_address_allocation = "Dynamic"
+    zones                         = var.location == "East US" || var.location == "South Central US" ? ["1", "2", "3"] : null
   }
 }
 
-resource "azurerm_lb_backend_address_pool" "bpepool" {
-  name                = "BackendPool"
-  resource_group_name = azurerm_resource_group.rg.name
-  loadbalancer_id     = azurerm_lb.ilb.id
+// Single Backend pool for the Load Balancer
+resource "azurerm_lb_backend_address_pool" "backend_pool" {
+  name            = "backend-pool"
+  loadbalancer_id = azurerm_lb.internal_lb.id
 }
 
-resource "azurerm_lb_probe" "health_probe" {
-  name                = "HealthProbe"
-  resource_group_name = azurerm_resource_group.rg.name
-  loadbalancer_id     = azurerm_lb.ilb.id
+// HTTP Health Probe for the Load Balancer
+resource "azurerm_lb_probe" "ilb_probe" {
+  for_each             = toset(var.health_probe_ports)
+  name                = "ilb-probe-${each.key}"
+  loadbalancer_id     = azurerm_lb.internal_lb.id
   protocol            = "Tcp"
-  port                = 80
+  port                = tonumber(each.key)
   interval_in_seconds = 5
   number_of_probes    = 2
 }
 
-resource "azurerm_lb_rule" "lb_rule" {
-  name                           = "LBRule"
-  resource_group_name            = azurerm_resource_group.rg.name
-  loadbalancer_id                = azurerm_lb.ilb.id
-  protocol                      = "Tcp"
-  frontend_port                 = 80
-  backend_port                  = 80
-  frontend_ip_configuration_name = "LoadBalancerFrontEnd"
-  backend_address_pool_id        = azurerm_lb_backend_address_pool.bpepool.id
-  probe_id                      = azurerm_lb_probe.health_probe.id
+// Correct Load Balancer Rule mapping frontend to backend ports
+resource "azurerm_lb_rule" "ilb_rule" {
+  for_each = {
+    for index, port in var.lb_rule_ports :
+    port => var.health_probe_ports[index]
+  }
+
+  name                           = "ilb-rule-${each.key}"
+  loadbalancer_id                = azurerm_lb.internal_lb.id
+  protocol                       = "Tcp"
+  frontend_port                  = tonumber(each.key)
+  backend_port                   = tonumber(each.value)
+  frontend_ip_configuration_name = "frontend-ip-config"
+  backend_address_pool_ids       = [azurerm_lb_backend_address_pool.backend_pool.id]
+  probe_id                       = azurerm_lb_probe.ilb_probe[each.value].id
+  enable_floating_ip             = false
+  idle_timeout_in_minutes        = 4
+  load_distribution              = "Default"
 }
 
-resource "azurerm_network_interface_backend_address_pool_association" "vm1_nic_association" {
-  network_interface_id    = var.vm_nics["vm1"].nic_id
-  ip_configuration_name   = var.vm_nics["vm1"].ip_configuration_name
-  backend_address_pool_id = azurerm_lb_backend_address_pool.bpepool.id
-  provider                = azurerm.sub1
+// Associate NICs with the shared Backend Pool with unique names
+resource "azurerm_network_interface_backend_address_pool_association" "nic_backend" {
+  for_each                = data.azurerm_network_interface.nic
+  network_interface_id    = each.value.id
+  ip_configuration_name   = each.value.ip_configuration[0].name
+  backend_address_pool_id = azurerm_lb_backend_address_pool.backend_pool.id
 }
 
-resource "azurerm_network_interface_backend_address_pool_association" "vm2_nic_association" {
-  network_interface_id    = var.vm_nics["vm2"].nic_id
-  ip_configuration_name   = var.vm_nics["vm2"].ip_configuration_name
-  backend_address_pool_id = azurerm_lb_backend_address_pool.bpepool.id
-  provider                = azurerm.sub2
+
+
+// Output the Load Balancer ID
+output "load_balancer_id" {
+  description = "The ID of the Internal Load Balancer."
+  value       = azurerm_lb.internal_lb.id
 }
 
-variable "subscription_id" {
-  description = "Azure Subscription ID"
+// Output the Frontend IP Configuration ID
+output "frontend_ip_configuration_id" {
+  description = "The ID of the Frontend IP Configuration."
+  value       = azurerm_lb.internal_lb.frontend_ip_configuration[0].id
+}
+
+// Output the Backend Pool ID
+output "backend_pool_id" {
+  description = "The ID of the Backend Address Pool."
+  value       = azurerm_lb_backend_address_pool.backend_pool.id
+}
+
+// Output the Load Balancer Probe IDs
+output "probe_ids" {
+  description = "The IDs of the Load Balancer Probes."
+  value       = [for probe in azurerm_lb_probe.ilb_probe : probe.id]
+}
+
+// Output the Load Balancer Rule IDs
+output "lb_rule_ids" {
+  description = "The IDs of the Load Balancer Rules."
+  value       = [for rule in azurerm_lb_rule.ilb_rule : rule.id]
+}
+
+
+
+
+provider "azurerm" {
+  features {}
+  subscription_id = "AAA"
+}
+
+
+
+// README.md
+
+# Azure Internal Load Balancer Module
+
+This Terraform module deploys an **Azure Internal Load Balancer (ILB)** with backend pool associations, health probes, and load balancing rules.
+
+## Features
+- Creates an Internal Load Balancer with a dynamic frontend IP configuration.
+- Configures health probes for specified ports.
+- Configures load balancing rules for specified ports.
+- Associates multiple NICs with the backend pool.
+
+## Inputs
+
+| Variable               | Description                                          | Type   | Example                                   |
+|-----------------------|------------------------------------------------------|--------|-------------------------------------------|
+| resource_group_name_tmp | Resource Group for the Load Balancer                 | string | `aa-gnd-nonprod2-spoke-test1-rg`          |
+| nic_resource_group     | Resource Group for NICs                             | string | `aa-gnd-nonprod2-spoke-test2-rg`          |
+| location               | Azure region for deployment                         | string | `North Central US`                        |
+| vnet_name              | Name of the existing Virtual Network                | string | `aa-gnd-aznc-test-vnet`                   |
+| vnet_resource_group    | Resource Group for the Virtual Network             | string | `aa-gnd-nonprod2-spoke-test1-rg`          |
+| subnet_name            | Name of the existing Subnet                        | string | `aa-gnd-aznc-test-snet`                  |
+| lb_name                | Name of the Internal Load Balancer                 | string | `internal-load-balancer-test`            |
+| nic_names              | List of NIC names to associate with the backend pool | list   | `["test1226", "test2498"]`              |
+| health_probe_ports     | Ports for health probes                            | list   | `["8080", "8443"]`                      |
+| lb_rule_ports          | Ports for load balancing rules                     | list   | `["80", "443"]`                         |
+
+## Outputs
+
+| Output                      | Description                             |
+|-----------------------------|-----------------------------------------|
+| load_balancer_id            | ID of the Internal Load Balancer         |
+| frontend_ip_configuration_id | ID of the Frontend IP Configuration     |
+| backend_pool_id             | ID of the Backend Address Pool          |
+| probe_ids                   | IDs of the Load Balancer Probes         |
+| lb_rule_ids                 | IDs of the Load Balancer Rules          |
+
+## Usage
+
+```hcl
+module "internal_lb" {
+  source                  = "./module"
+  resource_group_name_tmp = "aa-gnd-nonprod2-spoke-test1-rg"
+  location                = "North Central US"
+  vnet_name               = "aa-gnd-aznc-test-vnet"
+  vnet_resource_group     = "aa-gnd-nonprod2-spoke-test1-rg"
+  nic_resource_group      = "aa-gnd-nonprod2-spoke-test2-rg"
+  subnet_name             = "aa-gnd-aznc-test-snet"
+  lb_name                 = "internal-load-balancer-test"
+  nic_names               = ["test1226", "test2498"]
+  health_probe_ports      = ["8080", "8443"]
+  lb_rule_ports           = ["80", "443"]
+}
+```
+
+## License
+
+MIT License.
+
+
+
+
+
+variable "resource_group_name_tmp" {
+  description = "The name of the Resource Group to create the Load Balancer in."
   type        = string
-  default     = "33333333-3333-3333-3333-333333333333"
 }
 
-variable "resource_group_name" {
-  description = "Name of the Resource Group"
+variable "nic_resource_group" {
+  description = "The name of the Resource Group containing the NICs."
   type        = string
-  default     = "rg-ilb"
 }
 
 variable "location" {
-  description = "Azure region for resources"
+  description = "The Azure region where the resources will be deployed."
   type        = string
-  default     = "East US"
 }
 
 variable "vnet_name" {
-  description = "Virtual Network name"
+  description = "The name of the existing Virtual Network."
   type        = string
-  default     = "vnet-ilb"
 }
 
-variable "vnet_address_space" {
-  description = "(Deprecated) Address space for the VNet - not used when referencing an existing VNet"
+variable "vnet_resource_group" {
+  description = "The name of the Resource Group where the Virtual Network exists."
   type        = string
-  default     = "10.0.0.0/16"
 }
 
 variable "subnet_name" {
-  description = "Subnet name"
+  description = "The name of the existing Subnet."
   type        = string
-  default     = "subnet-ilb"
-}
-
-variable "subnet_address_prefix" {
-  description = "(Deprecated) Subnet address prefix - not used when referencing an existing Subnet"
-  type        = string
-  default     = "10.0.1.0/24"
 }
 
 variable "lb_name" {
-  description = "Internal Load Balancer name"
+  description = "The name of the Internal Load Balancer."
   type        = string
-  default     = "ilb-test"
 }
 
-variable "vm_nics" {
-  description = "Map of NICs with subscription, resource group, NIC ID, and IP configuration name"
-  type = map(object({
-    subscription_id        = string
-    resource_group_name    = string
-    nic_id                 = string
-    ip_configuration_name  = string
-  }))
-  default = {
-    "vm1" = {
-      subscription_id       = "11111111-1111-1111-1111-111111111111"
-      resource_group_name   = "rg-vm1"
-      nic_id                = "/subscriptions/11111111-1111-1111-1111-111111111111/resourceGroups/rg-vm1/providers/Microsoft.Network/networkInterfaces/vm1-nic"
-      ip_configuration_name = "ipconfig1"
-    }
-    "vm2" = {
-      subscription_id       = "22222222-2222-2222-2222-222222222222"
-      resource_group_name   = "rg-vm2"
-      nic_id                = "/subscriptions/22222222-2222-2222-2222-222222222222/resourceGroups/rg-vm2/providers/Microsoft.Network/networkInterfaces/vm2-nic"
-      ip_configuration_name = "ipconfig1"
-    }
-  }
+variable "nic_names" {
+  description = "List of NIC names to associate with the backend pool."
+  type        = list(string)
 }
 
-output "load_balancer_private_ip" {
-  value = azurerm_lb.ilb.frontend_ip_configuration[0].private_ip_address
+variable "health_probe_ports" {
+  description = "List of ports for health probes."
+  type        = list(string)
+}
+
+variable "lb_rule_ports" {
+  description = "List of frontend ports for load balancing rules."
+  type        = list(string)
+}
+
+
+
+
+module "internal_lb" {
+  source                  = "./module"
+  resource_group_name_tmp = "aa-gnd-nonprod2-spoke-test1-rg"
+  location                = "North Central US"
+  vnet_name               = "aa-gnd-aznc-test-vnet"
+  vnet_resource_group     = "aa-gnd-nonprod2-spoke-test1-rg"
+  nic_resource_group      = "aa-gnd-nonprod2-spoke-test2-rg"
+  subnet_name             = "aa-gnd-aznc-test-snet"
+  lb_name                 = "internal-load-balancer-test"
+  nic_names               = ["test1226", "test2498"]
+  health_probe_ports      = ["80", "443"]
+  lb_rule_ports           = ["80", "443"]
 }
